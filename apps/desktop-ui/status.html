@@ -17,11 +17,15 @@
     .row { margin:10px 0; }
     label { display:block; margin-bottom:5px; font-weight:600; }
     input, select, textarea { width:100%; padding:8px; border:1px solid #d1d5db; border-radius:6px; box-sizing:border-box; }
-    button.action { margin-right:8px; padding:8px 12px; border:1px solid #9ca3af; border-radius:6px; background:#fff; cursor:pointer; }
+    button.action { margin-right:8px; margin-bottom:8px; padding:8px 12px; border:1px solid #9ca3af; border-radius:6px; background:#fff; cursor:pointer; }
     .ok { color:#0a7a2f; }
     .err { color:#b00020; }
-    #chatBox { height: 340px; overflow-y: auto; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; padding:10px; }
-    .msg { margin:8px 0; padding:8px 10px; border-radius:8px; }
+    #chatWrap { display:grid; grid-template-columns: 220px 1fr; gap: 12px; }
+    #sessionList { border:1px solid #e5e7eb; border-radius:6px; background:#f9fafb; max-height:380px; overflow:auto; padding:8px; }
+    .sessionItem { border:1px solid #d1d5db; border-radius:6px; padding:6px 8px; margin-bottom:6px; cursor:pointer; background:#fff; }
+    .sessionItem.active { border-color:#2563eb; background:#eff6ff; }
+    #chatBox { height: 300px; overflow-y: auto; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; padding:10px; }
+    .msg { margin:8px 0; padding:8px 10px; border-radius:8px; white-space: pre-wrap; }
     .user { background:#dbeafe; }
     .assistant { background:#e5e7eb; }
     pre { background:#0b1020; color:#e6edf3; padding:10px; border-radius:6px; overflow:auto; }
@@ -40,30 +44,43 @@
       <h2>运行状态</h2>
       <p id="healthText">检查中...</p>
       <button class="action" id="refreshHealth">刷新健康状态</button>
+      <button class="action" id="exportDiagBtn">导出诊断信息</button>
       <pre id="healthPayload">{}</pre>
+      <p id="diagStatus"></p>
     </div>
 
     <div id="chatPanel" class="panel">
       <h2>聊天界面</h2>
-      <div class="row">
-        <label>Provider</label>
-        <select id="provider">
-          <option value="local">local（本地）</option>
-          <option value="cloud">cloud（云端）</option>
-        </select>
+      <div id="chatWrap">
+        <div>
+          <button class="action" id="createSessionBtn">新建会话</button>
+          <button class="action" id="renameSessionBtn">重命名</button>
+          <button class="action" id="deleteSessionBtn">删除</button>
+          <button class="action" id="exportSessionBtn">导出会话</button>
+          <div id="sessionList"></div>
+        </div>
+        <div>
+          <div class="row">
+            <label>Provider</label>
+            <select id="provider">
+              <option value="local">local（本地）</option>
+              <option value="cloud">cloud（云端）</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>Model</label>
+            <input id="model" value="local-echo" />
+          </div>
+          <div id="chatBox"></div>
+          <div class="row">
+            <label>输入消息</label>
+            <textarea id="userInput" rows="4" placeholder="请输入内容..."></textarea>
+          </div>
+          <button class="action" id="sendBtn">发送</button>
+          <button class="action" id="clearContextBtn">清空上下文</button>
+          <span id="chatStatus"></span>
+        </div>
       </div>
-      <div class="row">
-        <label>Model</label>
-        <input id="model" value="local-echo" />
-      </div>
-      <div id="chatBox"></div>
-      <div class="row">
-        <label>输入消息</label>
-        <textarea id="userInput" rows="4" placeholder="请输入内容..."></textarea>
-      </div>
-      <button class="action" id="sendBtn">发送</button>
-      <button class="action" id="newSessionBtn">新会话</button>
-      <span id="chatStatus"></span>
     </div>
 
     <div id="configPanel" class="panel">
@@ -91,6 +108,11 @@
       <button class="action" id="saveConfigBtn">保存配置</button>
       <button class="action" id="testLocalBtn">测试本地</button>
       <button class="action" id="testCloudBtn">测试云端</button>
+      <hr />
+      <h3>配置快照</h3>
+      <button class="action" id="saveSnapshotBtn">保存快照</button>
+      <button class="action" id="loadSnapshotsBtn">刷新快照列表</button>
+      <div id="snapshotList"></div>
       <p id="configStatus"></p>
     </div>
   </section>
@@ -107,6 +129,15 @@
 
   let sessionId = null;
   let messages = [];
+  let sessions = [];
+
+  function setText(id, text, ok = null) {
+    const el = document.getElementById(id);
+    el.textContent = text;
+    if (ok === true) el.className = 'ok';
+    else if (ok === false) el.className = 'err';
+    else el.className = '';
+  }
 
   function appendMessage(role, content) {
     const box = document.getElementById('chatBox');
@@ -117,19 +148,117 @@
     box.scrollTop = box.scrollHeight;
   }
 
+  function renderChatMessages() {
+    const box = document.getElementById('chatBox');
+    box.innerHTML = '';
+    messages.forEach(m => appendMessage(m.role, m.content));
+  }
+
+  function renderSessions() {
+    const list = document.getElementById('sessionList');
+    list.innerHTML = '';
+    sessions.forEach(s => {
+      const div = document.createElement('div');
+      div.className = `sessionItem ${s.id === sessionId ? 'active' : ''}`;
+      div.textContent = s.title || s.id;
+      div.onclick = () => {
+        sessionId = s.id;
+        messages = s.messages || [];
+        renderSessions();
+        renderChatMessages();
+        setText('chatStatus', `已切换会话：${s.title || s.id}`, true);
+      };
+      list.appendChild(div);
+    });
+  }
+
+  async function refreshSessions() {
+    const res = await fetch('/api/sessions');
+    const data = await res.json();
+    sessions = data.sessions || [];
+    if (!sessionId && sessions.length > 0) {
+      sessionId = sessions[sessions.length - 1].id;
+      messages = sessions[sessions.length - 1].messages || [];
+    }
+    const active = sessions.find(s => s.id === sessionId);
+    if (active) messages = active.messages || [];
+    renderSessions();
+    renderChatMessages();
+  }
+
+  async function createSession() {
+    const res = await fetch('/api/sessions', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      sessionId = data.session.id;
+      messages = [];
+      await refreshSessions();
+      setText('chatStatus', '已创建新会话', true);
+    }
+  }
+
+  async function renameSession() {
+    if (!sessionId) return;
+    const title = prompt('请输入新会话名：');
+    if (!title) return;
+    const res = await fetch(`/api/sessions/${sessionId}/rename`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      await refreshSessions();
+      setText('chatStatus', `已重命名：${data.session.title}`, true);
+    } else setText('chatStatus', data.error || '重命名失败', false);
+  }
+
+  async function deleteSession() {
+    if (!sessionId) return;
+    if (!confirm('确认删除该会话？')) return;
+    const res = await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (res.ok) {
+      sessionId = null;
+      messages = [];
+      await refreshSessions();
+      setText('chatStatus', '会话已删除', true);
+    } else setText('chatStatus', data.error || '删除失败', false);
+  }
+
+  async function exportSession() {
+    if (!sessionId) return;
+    const res = await fetch(`/api/sessions/${sessionId}/export`);
+    const data = await res.json();
+    if (!res.ok) return setText('chatStatus', data.error || '导出失败', false);
+    const blob = new Blob([JSON.stringify(data.session, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `session_${sessionId}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setText('chatStatus', '会话已导出', true);
+  }
+
   async function loadHealth() {
-    const t = document.getElementById('healthText');
     const p = document.getElementById('healthPayload');
     try {
       const res = await fetch('/health');
       const data = await res.json();
       p.textContent = JSON.stringify(data, null, 2);
-      t.textContent = res.ok ? '✅ 服务正常' : '⚠️ 服务异常';
-      t.className = res.ok ? 'ok' : 'err';
+      setText('healthText', res.ok ? '✅ 服务正常' : '⚠️ 服务异常', res.ok);
     } catch (e) {
-      t.textContent = '❌ 服务不可达';
-      t.className = 'err';
+      setText('healthText', '❌ 服务不可达', false);
       p.textContent = String(e);
+    }
+  }
+
+  async function exportDiag() {
+    const res = await fetch('/api/diagnostics/export');
+    const data = await res.json();
+    if (res.ok) {
+      setText('diagStatus', `✅ 已导出: ${data.diagnostic_path}`, true);
+    } else {
+      setText('diagStatus', `❌ 导出失败: ${data.error || 'unknown'}`, false);
     }
   }
 
@@ -149,7 +278,8 @@
   async function saveConfig() {
     const payload = {
       config: {
-        app: { name: 'openclaw-desktop', version: '0.1.0' },
+        app: { name: 'openclaw-desktop', version: '0.2.0' },
+        chat: { cloud_fallback_to_local: true, max_history_messages: 40 },
         providers: {
           local: {
             enabled: true,
@@ -168,35 +298,55 @@
     };
 
     const res = await fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
     });
     const data = await res.json();
-    const s = document.getElementById('configStatus');
-    if (res.ok) {
-      s.textContent = '✅ 配置已保存';
-      s.className = 'ok';
-    } else {
-      s.textContent = `❌ 保存失败: ${data.error || 'unknown'}`;
-      s.className = 'err';
-    }
+    setText('configStatus', res.ok ? '✅ 配置已保存' : `❌ 保存失败: ${data.error || 'unknown'}`, res.ok);
   }
 
   async function testProvider(provider) {
     const res = await fetch('/v1/config/test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider })
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider })
     });
     const data = await res.json();
-    const s = document.getElementById('configStatus');
-    if (res.ok && data.ok) {
-      s.textContent = `✅ ${provider} 连接测试通过`;
-      s.className = 'ok';
+    setText('configStatus', res.ok && data.ok ? `✅ ${provider} 连接测试通过` : `❌ ${provider} 测试失败: ${data.error_message || data.error || 'unknown'}`, res.ok && data.ok);
+  }
+
+  async function loadSnapshots() {
+    const res = await fetch('/api/snapshots');
+    const data = await res.json();
+    const list = document.getElementById('snapshotList');
+    list.innerHTML = '';
+    (data.snapshots || []).forEach(s => {
+      const div = document.createElement('div');
+      div.className = 'sessionItem';
+      div.textContent = `${s.name} (${s.updated_at})`;
+      div.onclick = async () => {
+        const r = await fetch(`/api/snapshots/${s.name}/restore`, { method: 'POST' });
+        const d = await r.json();
+        if (r.ok) {
+          await loadConfig();
+          setText('configStatus', `✅ 已恢复快照: ${s.name}`, true);
+        } else {
+          setText('configStatus', `❌ 恢复失败: ${d.error || 'unknown'}`, false);
+        }
+      };
+      list.appendChild(div);
+    });
+  }
+
+  async function saveSnapshot() {
+    const name = prompt('请输入快照名：');
+    if (!name) return;
+    const res = await fetch('/api/snapshots', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      await loadSnapshots();
+      setText('configStatus', `✅ 快照已保存: ${data.snapshot.name}`, true);
     } else {
-      s.textContent = `❌ ${provider} 测试失败: ${data.error_message || data.error || 'unknown'}`;
-      s.className = 'err';
+      setText('configStatus', `❌ 快照保存失败: ${data.error || 'unknown'}`, false);
     }
   }
 
@@ -217,35 +367,41 @@
       body: JSON.stringify({ provider, model, session_id: sessionId, messages })
     });
     const data = await res.json();
-    const status = document.getElementById('chatStatus');
 
-    if (!res.ok) {
-      status.textContent = `❌ ${data.error || '发送失败'}`;
-      status.className = 'err';
-      return;
-    }
+    if (!res.ok) return setText('chatStatus', `❌ ${data.error || '发送失败'}`, false);
 
     sessionId = data.session_id;
-    messages.push({ role: 'assistant', content: data.content });
+    messages = [...messages, { role: 'assistant', content: data.content }];
     appendMessage('assistant', data.content);
-    status.textContent = `✅ 已回复（session: ${sessionId.slice(0, 8)}）`;
-    status.className = 'ok';
+    await refreshSessions();
+    const used = data.actual_provider || data.provider;
+    setText('chatStatus', `✅ 已回复（provider: ${used}）`, true);
+  }
+
+  function clearContext() {
+    messages = [];
+    renderChatMessages();
+    setText('chatStatus', '已清空当前上下文（未删除会话）', true);
   }
 
   document.getElementById('refreshHealth').addEventListener('click', loadHealth);
+  document.getElementById('exportDiagBtn').addEventListener('click', exportDiag);
+  document.getElementById('createSessionBtn').addEventListener('click', createSession);
+  document.getElementById('renameSessionBtn').addEventListener('click', renameSession);
+  document.getElementById('deleteSessionBtn').addEventListener('click', deleteSession);
+  document.getElementById('exportSessionBtn').addEventListener('click', exportSession);
+  document.getElementById('sendBtn').addEventListener('click', sendMessage);
+  document.getElementById('clearContextBtn').addEventListener('click', clearContext);
   document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
   document.getElementById('testLocalBtn').addEventListener('click', () => testProvider('local'));
   document.getElementById('testCloudBtn').addEventListener('click', () => testProvider('cloud'));
-  document.getElementById('sendBtn').addEventListener('click', sendMessage);
-  document.getElementById('newSessionBtn').addEventListener('click', () => {
-    sessionId = null;
-    messages = [];
-    document.getElementById('chatBox').innerHTML = '';
-    document.getElementById('chatStatus').textContent = '已新建会话';
-  });
+  document.getElementById('saveSnapshotBtn').addEventListener('click', saveSnapshot);
+  document.getElementById('loadSnapshotsBtn').addEventListener('click', loadSnapshots);
 
   loadHealth();
   loadConfig();
+  refreshSessions();
+  loadSnapshots();
 </script>
 </body>
 </html>

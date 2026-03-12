@@ -24,6 +24,16 @@ class ServerCoreTests(unittest.TestCase):
         found = server.find_or_create_session(session["id"], sessions)
         self.assertEqual(found["id"], session["id"])
 
+    def test_sanitize_name(self):
+        self.assertEqual(server.sanitize_name("a b/c"), "a_b_c")
+        self.assertTrue(server.sanitize_name("***").startswith("snapshot_"))
+
+    def test_chat_generate_local(self):
+        cfg = server.DEFAULT_CONFIG
+        content, used = server.chat_generate("local", "local-echo", [{"role": "user", "content": "hi"}], cfg)
+        self.assertEqual(used, "local")
+        self.assertIn("hi", content)
+
 
 if __name__ == "__main__":
     unittest.main()
