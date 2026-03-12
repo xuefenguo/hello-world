@@ -34,6 +34,17 @@ class ServerCoreTests(unittest.TestCase):
         self.assertEqual(used, "local")
         self.assertIn("hi", content)
 
+    def test_detect_action_from_text(self):
+        plan = server.detect_action_from_text("请告诉我当前目录")
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan["action_type"], "pwd")
+
+    def test_execute_allowed_action(self):
+        result = server.execute_allowed_action("pwd")
+        self.assertEqual(result["returncode"], 0)
+        self.assertIn("command", result)
+
 
 if __name__ == "__main__":
     unittest.main()

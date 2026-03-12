@@ -18,25 +18,23 @@
     label { display:block; margin-bottom:5px; font-weight:600; }
     input, select, textarea { width:100%; padding:8px; border:1px solid #d1d5db; border-radius:6px; box-sizing:border-box; }
     button.action { margin-right:8px; margin-bottom:8px; padding:8px 12px; border:1px solid #9ca3af; border-radius:6px; background:#fff; cursor:pointer; }
-    .ok { color:#0a7a2f; }
-    .err { color:#b00020; }
+    .ok { color:#0a7a2f; } .err { color:#b00020; }
     #chatWrap { display:grid; grid-template-columns: 220px 1fr; gap: 12px; }
-    #sessionList { border:1px solid #e5e7eb; border-radius:6px; background:#f9fafb; max-height:380px; overflow:auto; padding:8px; }
+    #sessionList,#actionList,#snapshotList { border:1px solid #e5e7eb; border-radius:6px; background:#f9fafb; max-height:240px; overflow:auto; padding:8px; }
     .sessionItem { border:1px solid #d1d5db; border-radius:6px; padding:6px 8px; margin-bottom:6px; cursor:pointer; background:#fff; }
     .sessionItem.active { border-color:#2563eb; background:#eff6ff; }
-    #chatBox { height: 300px; overflow-y: auto; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; padding:10px; }
+    #chatBox { height: 260px; overflow-y: auto; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; padding:10px; }
     .msg { margin:8px 0; padding:8px 10px; border-radius:8px; white-space: pre-wrap; }
-    .user { background:#dbeafe; }
-    .assistant { background:#e5e7eb; }
+    .user { background:#dbeafe; } .assistant { background:#e5e7eb; }
     pre { background:#0b1020; color:#e6edf3; padding:10px; border-radius:6px; overflow:auto; }
   </style>
 </head>
 <body>
-<header>OpenClaw Desktop v1（可安装可使用）</header>
+<header>OpenClaw Desktop v1（核心：聊天驱动 OpenClaw 桌面操作）</header>
 <main>
   <nav>
     <button class="tab active" data-target="statusPanel">状态</button>
-    <button class="tab" data-target="chatPanel">聊天</button>
+    <button class="tab" data-target="chatPanel">聊天+操作</button>
     <button class="tab" data-target="configPanel">配置</button>
   </nav>
   <section>
@@ -50,7 +48,7 @@
     </div>
 
     <div id="chatPanel" class="panel">
-      <h2>聊天界面</h2>
+      <h2>聊天与电脑操作</h2>
       <div id="chatWrap">
         <div>
           <button class="action" id="createSessionBtn">新建会话</button>
@@ -60,51 +58,29 @@
           <div id="sessionList"></div>
         </div>
         <div>
-          <div class="row">
-            <label>Provider</label>
-            <select id="provider">
-              <option value="local">local（本地）</option>
-              <option value="cloud">cloud（云端）</option>
-            </select>
-          </div>
-          <div class="row">
-            <label>Model</label>
-            <input id="model" value="local-echo" />
-          </div>
+          <div class="row"><label>Provider</label><select id="provider"><option value="local">local</option><option value="cloud">cloud</option></select></div>
+          <div class="row"><label>Model</label><input id="model" value="local-echo" /></div>
           <div id="chatBox"></div>
-          <div class="row">
-            <label>输入消息</label>
-            <textarea id="userInput" rows="4" placeholder="请输入内容..."></textarea>
-          </div>
-          <button class="action" id="sendBtn">发送</button>
+          <div class="row"><label>输入消息（聊天）</label><textarea id="userInput" rows="3" placeholder="请输入聊天内容..."></textarea></div>
+          <button class="action" id="sendBtn">发送聊天</button>
           <button class="action" id="clearContextBtn">清空上下文</button>
-          <span id="chatStatus"></span>
+          <hr/>
+          <div class="row"><label>电脑操作指令（示例：查询当前目录/系统时间/主目录文件）</label><textarea id="operateInput" rows="2" placeholder="请输入电脑操作需求..."></textarea></div>
+          <button class="action" id="planActionBtn">规划操作</button>
+          <button class="action" id="refreshActionsBtn">刷新操作列表</button>
+          <div id="actionList"></div>
+          <p id="chatStatus"></p>
         </div>
       </div>
     </div>
 
     <div id="configPanel" class="panel">
       <h2>模型配置</h2>
-      <div class="row">
-        <label>本地模型名</label>
-        <input id="localModel" />
-      </div>
-      <div class="row">
-        <label>本地模型地址（可选）</label>
-        <input id="localEndpoint" />
-      </div>
-      <div class="row">
-        <label>云端 Base URL</label>
-        <input id="cloudBaseUrl" />
-      </div>
-      <div class="row">
-        <label>云端 API Key</label>
-        <input id="cloudApiKey" type="password" />
-      </div>
-      <div class="row">
-        <label>云端模型名</label>
-        <input id="cloudModel" />
-      </div>
+      <div class="row"><label>本地模型名</label><input id="localModel" /></div>
+      <div class="row"><label>本地模型地址（可选）</label><input id="localEndpoint" /></div>
+      <div class="row"><label>云端 Base URL</label><input id="cloudBaseUrl" /></div>
+      <div class="row"><label>云端 API Key</label><input id="cloudApiKey" type="password" /></div>
+      <div class="row"><label>云端模型名</label><input id="cloudModel" /></div>
       <button class="action" id="saveConfigBtn">保存配置</button>
       <button class="action" id="testLocalBtn">测试本地</button>
       <button class="action" id="testCloudBtn">测试云端</button>
@@ -119,289 +95,48 @@
 </main>
 
 <script>
-  const tabs = document.querySelectorAll('.tab');
-  tabs.forEach(tab => tab.addEventListener('click', () => {
-    tabs.forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    document.getElementById(tab.dataset.target).classList.add('active');
-  }));
+const tabs = document.querySelectorAll('.tab');
+tabs.forEach(tab => tab.addEventListener('click', () => {
+  tabs.forEach(t => t.classList.remove('active')); tab.classList.add('active');
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById(tab.dataset.target).classList.add('active');
+}));
 
-  let sessionId = null;
-  let messages = [];
-  let sessions = [];
+let sessionId = null; let messages = []; let sessions = [];
+const setText=(id,text,ok=null)=>{const el=document.getElementById(id);el.textContent=text;el.className=ok===true?'ok':(ok===false?'err':'');};
 
-  function setText(id, text, ok = null) {
-    const el = document.getElementById(id);
-    el.textContent = text;
-    if (ok === true) el.className = 'ok';
-    else if (ok === false) el.className = 'err';
-    else el.className = '';
-  }
+function appendMessage(role, content){const box=document.getElementById('chatBox');const div=document.createElement('div');div.className=`msg ${role}`;div.textContent=`${role}: ${content}`;box.appendChild(div);box.scrollTop=box.scrollHeight;}
+function renderChatMessages(){const box=document.getElementById('chatBox');box.innerHTML='';messages.forEach(m=>appendMessage(m.role,m.content));}
+function renderSessions(){const list=document.getElementById('sessionList');list.innerHTML='';sessions.forEach(s=>{const d=document.createElement('div');d.className=`sessionItem ${s.id===sessionId?'active':''}`;d.textContent=s.title||s.id;d.onclick=()=>{sessionId=s.id;messages=s.messages||[];renderSessions();renderChatMessages();};list.appendChild(d);});}
 
-  function appendMessage(role, content) {
-    const box = document.getElementById('chatBox');
-    const div = document.createElement('div');
-    div.className = `msg ${role}`;
-    div.textContent = `${role}: ${content}`;
-    box.appendChild(div);
-    box.scrollTop = box.scrollHeight;
-  }
+async function refreshSessions(){const res=await fetch('/api/sessions');const data=await res.json();sessions=data.sessions||[];if(!sessionId&&sessions.length){sessionId=sessions[sessions.length-1].id;messages=sessions[sessions.length-1].messages||[];}const active=sessions.find(s=>s.id===sessionId);if(active)messages=active.messages||[];renderSessions();renderChatMessages();}
+async function createSession(){const res=await fetch('/api/sessions',{method:'POST'});const data=await res.json();if(res.ok){sessionId=data.session.id;messages=[];await refreshSessions();setText('chatStatus','已创建新会话',true);}}
+async function renameSession(){if(!sessionId)return;const title=prompt('请输入新会话名：');if(!title)return;const res=await fetch(`/api/sessions/${sessionId}/rename`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title})});const data=await res.json();if(res.ok){await refreshSessions();setText('chatStatus',`已重命名：${data.session.title}`,true);}else setText('chatStatus',data.error||'重命名失败',false);}
+async function deleteSession(){if(!sessionId)return;if(!confirm('确认删除该会话？'))return;const res=await fetch(`/api/sessions/${sessionId}`,{method:'DELETE'});const data=await res.json();if(res.ok){sessionId=null;messages=[];await refreshSessions();setText('chatStatus','会话已删除',true);}else setText('chatStatus',data.error||'删除失败',false);}
+async function exportSession(){if(!sessionId)return;const res=await fetch(`/api/sessions/${sessionId}/export`);const data=await res.json();if(!res.ok)return setText('chatStatus',data.error||'导出失败',false);const blob=new Blob([JSON.stringify(data.session,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`session_${sessionId}.json`;a.click();URL.revokeObjectURL(url);setText('chatStatus','会话已导出',true);}
 
-  function renderChatMessages() {
-    const box = document.getElementById('chatBox');
-    box.innerHTML = '';
-    messages.forEach(m => appendMessage(m.role, m.content));
-  }
+async function loadHealth(){const p=document.getElementById('healthPayload');try{const res=await fetch('/health');const data=await res.json();p.textContent=JSON.stringify(data,null,2);setText('healthText',res.ok?'✅ 服务正常':'⚠️ 服务异常',res.ok);}catch(e){setText('healthText','❌ 服务不可达',false);p.textContent=String(e);}}
+async function exportDiag(){const res=await fetch('/api/diagnostics/export');const data=await res.json();setText('diagStatus',res.ok?`✅ 已导出: ${data.diagnostic_path}`:`❌ 导出失败: ${data.error||'unknown'}`,res.ok);}
 
-  function renderSessions() {
-    const list = document.getElementById('sessionList');
-    list.innerHTML = '';
-    sessions.forEach(s => {
-      const div = document.createElement('div');
-      div.className = `sessionItem ${s.id === sessionId ? 'active' : ''}`;
-      div.textContent = s.title || s.id;
-      div.onclick = () => {
-        sessionId = s.id;
-        messages = s.messages || [];
-        renderSessions();
-        renderChatMessages();
-        setText('chatStatus', `已切换会话：${s.title || s.id}`, true);
-      };
-      list.appendChild(div);
-    });
-  }
+async function loadConfig(){const res=await fetch('/api/config');const data=await res.json();const cfg=data.config||{};const local=(cfg.providers||{}).local||{};const cloud=(cfg.providers||{}).cloud||{};localModel.value=local.model||'';localEndpoint.value=local.endpoint||'';cloudBaseUrl.value=cloud.base_url||'';cloudApiKey.value=cloud.api_key||'';cloudModel.value=cloud.model||'';}
+async function saveConfig(){const payload={config:{app:{name:'openclaw-desktop',version:'0.3.0'},chat:{cloud_fallback_to_local:true,max_history_messages:40},computer_control:{enabled:true,require_confirm:true},providers:{local:{enabled:true,model:localModel.value,endpoint:localEndpoint.value},cloud:{enabled:true,base_url:cloudBaseUrl.value,api_key:cloudApiKey.value,model:cloudModel.value,timeout_s:45}}}};const res=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const data=await res.json();setText('configStatus',res.ok?'✅ 配置已保存':`❌ 保存失败: ${data.error||'unknown'}`,res.ok);}
+async function testProvider(provider){const res=await fetch('/v1/config/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider})});const data=await res.json();setText('configStatus',res.ok&&data.ok?`✅ ${provider} 连接测试通过`:`❌ ${provider} 测试失败: ${data.error_message||data.error||'unknown'}`,res.ok&&data.ok);}
 
-  async function refreshSessions() {
-    const res = await fetch('/api/sessions');
-    const data = await res.json();
-    sessions = data.sessions || [];
-    if (!sessionId && sessions.length > 0) {
-      sessionId = sessions[sessions.length - 1].id;
-      messages = sessions[sessions.length - 1].messages || [];
-    }
-    const active = sessions.find(s => s.id === sessionId);
-    if (active) messages = active.messages || [];
-    renderSessions();
-    renderChatMessages();
-  }
+async function loadSnapshots(){const res=await fetch('/api/snapshots');const data=await res.json();snapshotList.innerHTML='';(data.snapshots||[]).forEach(s=>{const div=document.createElement('div');div.className='sessionItem';div.textContent=`${s.name} (${s.updated_at})`;div.onclick=async()=>{const r=await fetch(`/api/snapshots/${s.name}/restore`,{method:'POST'});const d=await r.json();if(r.ok){await loadConfig();setText('configStatus',`✅ 已恢复快照: ${s.name}`,true);}else setText('configStatus',`❌ 恢复失败: ${d.error||'unknown'}`,false);};snapshotList.appendChild(div);});}
+async function saveSnapshot(){const name=prompt('请输入快照名：');if(!name)return;const res=await fetch('/api/snapshots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await res.json();if(res.ok){await loadSnapshots();setText('configStatus',`✅ 快照已保存: ${data.snapshot.name}`,true);}else setText('configStatus',`❌ 快照保存失败: ${data.error||'unknown'}`,false);}
 
-  async function createSession() {
-    const res = await fetch('/api/sessions', { method: 'POST' });
-    const data = await res.json();
-    if (res.ok) {
-      sessionId = data.session.id;
-      messages = [];
-      await refreshSessions();
-      setText('chatStatus', '已创建新会话', true);
-    }
-  }
+async function sendMessage(){const text=userInput.value.trim();if(!text)return;const provider=document.getElementById('provider').value;const model=document.getElementById('model').value.trim()||'local-echo';messages.push({role:'user',content:text});appendMessage('user',text);userInput.value='';const res=await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider,model,session_id:sessionId,messages})});const data=await res.json();if(!res.ok)return setText('chatStatus',`❌ ${data.error||'发送失败'}`,false);sessionId=data.session_id;messages=[...messages,{role:'assistant',content:data.content}];appendMessage('assistant',data.content);await refreshSessions();setText('chatStatus',`✅ 已回复（provider: ${data.actual_provider||data.provider}）`,true);}
+function clearContext(){messages=[];renderChatMessages();setText('chatStatus','已清空当前上下文（未删除会话）',true);}
 
-  async function renameSession() {
-    if (!sessionId) return;
-    const title = prompt('请输入新会话名：');
-    if (!title) return;
-    const res = await fetch(`/api/sessions/${sessionId}/rename`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title })
-    });
-    const data = await res.json();
-    if (res.ok) {
-      await refreshSessions();
-      setText('chatStatus', `已重命名：${data.session.title}`, true);
-    } else setText('chatStatus', data.error || '重命名失败', false);
-  }
+async function planAction(){const text=operateInput.value.trim();if(!text)return;const res=await fetch('/v1/chat/operate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,session_id:sessionId})});const data=await res.json();if(!res.ok)return setText('chatStatus',`❌ ${data.error||'操作失败'}`,false);if(!data.ok)return setText('chatStatus',`⚠️ ${data.message||'未识别操作'}`,false);setText('chatStatus',`✅ 已生成操作计划: ${data.action.action_type}`,true);await refreshActions();}
+async function executeAction(actionId){const res=await fetch(`/api/actions/${actionId}/execute`,{method:'POST'});const data=await res.json();if(!res.ok)return setText('chatStatus',`❌ 执行失败: ${data.error||'unknown'}`,false);const r=data.action.result||{};setText('chatStatus',`✅ 已执行 ${data.action.action_type}，返回码 ${r.returncode}`,true);await refreshActions();}
+async function refreshActions(){const res=await fetch('/api/actions');const data=await res.json();actionList.innerHTML='';(data.actions||[]).slice().reverse().forEach(a=>{const div=document.createElement('div');div.className='sessionItem';const cmd=(a.command||[]).join(' ');const out=(a.result&&a.result.stdout)?`\n输出: ${a.result.stdout}`:'';div.textContent=`[${a.status}] ${a.action_type} -> ${cmd}${out}`;if(a.status!=='done'){const b=document.createElement('button');b.textContent='确认执行';b.className='action';b.onclick=(e)=>{e.stopPropagation();executeAction(a.id);};div.appendChild(document.createElement('br'));div.appendChild(b);}actionList.appendChild(div);});}
 
-  async function deleteSession() {
-    if (!sessionId) return;
-    if (!confirm('确认删除该会话？')) return;
-    const res = await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
-    const data = await res.json();
-    if (res.ok) {
-      sessionId = null;
-      messages = [];
-      await refreshSessions();
-      setText('chatStatus', '会话已删除', true);
-    } else setText('chatStatus', data.error || '删除失败', false);
-  }
+refreshHealth.onclick=loadHealth; exportDiagBtn.onclick=exportDiag; createSessionBtn.onclick=createSession; renameSessionBtn.onclick=renameSession; deleteSessionBtn.onclick=deleteSession; exportSessionBtn.onclick=exportSession;
+sendBtn.onclick=sendMessage; clearContextBtn.onclick=clearContext; planActionBtn.onclick=planAction; refreshActionsBtn.onclick=refreshActions;
+saveConfigBtn.onclick=saveConfig; testLocalBtn.onclick=()=>testProvider('local'); testCloudBtn.onclick=()=>testProvider('cloud'); saveSnapshotBtn.onclick=saveSnapshot; loadSnapshotsBtn.onclick=loadSnapshots;
 
-  async function exportSession() {
-    if (!sessionId) return;
-    const res = await fetch(`/api/sessions/${sessionId}/export`);
-    const data = await res.json();
-    if (!res.ok) return setText('chatStatus', data.error || '导出失败', false);
-    const blob = new Blob([JSON.stringify(data.session, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `session_${sessionId}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setText('chatStatus', '会话已导出', true);
-  }
-
-  async function loadHealth() {
-    const p = document.getElementById('healthPayload');
-    try {
-      const res = await fetch('/health');
-      const data = await res.json();
-      p.textContent = JSON.stringify(data, null, 2);
-      setText('healthText', res.ok ? '✅ 服务正常' : '⚠️ 服务异常', res.ok);
-    } catch (e) {
-      setText('healthText', '❌ 服务不可达', false);
-      p.textContent = String(e);
-    }
-  }
-
-  async function exportDiag() {
-    const res = await fetch('/api/diagnostics/export');
-    const data = await res.json();
-    if (res.ok) {
-      setText('diagStatus', `✅ 已导出: ${data.diagnostic_path}`, true);
-    } else {
-      setText('diagStatus', `❌ 导出失败: ${data.error || 'unknown'}`, false);
-    }
-  }
-
-  async function loadConfig() {
-    const res = await fetch('/api/config');
-    const data = await res.json();
-    const cfg = data.config || {};
-    const local = (cfg.providers || {}).local || {};
-    const cloud = (cfg.providers || {}).cloud || {};
-    document.getElementById('localModel').value = local.model || '';
-    document.getElementById('localEndpoint').value = local.endpoint || '';
-    document.getElementById('cloudBaseUrl').value = cloud.base_url || '';
-    document.getElementById('cloudApiKey').value = cloud.api_key || '';
-    document.getElementById('cloudModel').value = cloud.model || '';
-  }
-
-  async function saveConfig() {
-    const payload = {
-      config: {
-        app: { name: 'openclaw-desktop', version: '0.2.0' },
-        chat: { cloud_fallback_to_local: true, max_history_messages: 40 },
-        providers: {
-          local: {
-            enabled: true,
-            model: document.getElementById('localModel').value,
-            endpoint: document.getElementById('localEndpoint').value,
-          },
-          cloud: {
-            enabled: true,
-            base_url: document.getElementById('cloudBaseUrl').value,
-            api_key: document.getElementById('cloudApiKey').value,
-            model: document.getElementById('cloudModel').value,
-            timeout_s: 45,
-          }
-        }
-      }
-    };
-
-    const res = await fetch('/api/config', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-    });
-    const data = await res.json();
-    setText('configStatus', res.ok ? '✅ 配置已保存' : `❌ 保存失败: ${data.error || 'unknown'}`, res.ok);
-  }
-
-  async function testProvider(provider) {
-    const res = await fetch('/v1/config/test', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider })
-    });
-    const data = await res.json();
-    setText('configStatus', res.ok && data.ok ? `✅ ${provider} 连接测试通过` : `❌ ${provider} 测试失败: ${data.error_message || data.error || 'unknown'}`, res.ok && data.ok);
-  }
-
-  async function loadSnapshots() {
-    const res = await fetch('/api/snapshots');
-    const data = await res.json();
-    const list = document.getElementById('snapshotList');
-    list.innerHTML = '';
-    (data.snapshots || []).forEach(s => {
-      const div = document.createElement('div');
-      div.className = 'sessionItem';
-      div.textContent = `${s.name} (${s.updated_at})`;
-      div.onclick = async () => {
-        const r = await fetch(`/api/snapshots/${s.name}/restore`, { method: 'POST' });
-        const d = await r.json();
-        if (r.ok) {
-          await loadConfig();
-          setText('configStatus', `✅ 已恢复快照: ${s.name}`, true);
-        } else {
-          setText('configStatus', `❌ 恢复失败: ${d.error || 'unknown'}`, false);
-        }
-      };
-      list.appendChild(div);
-    });
-  }
-
-  async function saveSnapshot() {
-    const name = prompt('请输入快照名：');
-    if (!name) return;
-    const res = await fetch('/api/snapshots', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name })
-    });
-    const data = await res.json();
-    if (res.ok) {
-      await loadSnapshots();
-      setText('configStatus', `✅ 快照已保存: ${data.snapshot.name}`, true);
-    } else {
-      setText('configStatus', `❌ 快照保存失败: ${data.error || 'unknown'}`, false);
-    }
-  }
-
-  async function sendMessage() {
-    const input = document.getElementById('userInput');
-    const text = input.value.trim();
-    if (!text) return;
-
-    const provider = document.getElementById('provider').value;
-    const model = document.getElementById('model').value.trim() || 'local-echo';
-    messages.push({ role: 'user', content: text });
-    appendMessage('user', text);
-    input.value = '';
-
-    const res = await fetch('/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, model, session_id: sessionId, messages })
-    });
-    const data = await res.json();
-
-    if (!res.ok) return setText('chatStatus', `❌ ${data.error || '发送失败'}`, false);
-
-    sessionId = data.session_id;
-    messages = [...messages, { role: 'assistant', content: data.content }];
-    appendMessage('assistant', data.content);
-    await refreshSessions();
-    const used = data.actual_provider || data.provider;
-    setText('chatStatus', `✅ 已回复（provider: ${used}）`, true);
-  }
-
-  function clearContext() {
-    messages = [];
-    renderChatMessages();
-    setText('chatStatus', '已清空当前上下文（未删除会话）', true);
-  }
-
-  document.getElementById('refreshHealth').addEventListener('click', loadHealth);
-  document.getElementById('exportDiagBtn').addEventListener('click', exportDiag);
-  document.getElementById('createSessionBtn').addEventListener('click', createSession);
-  document.getElementById('renameSessionBtn').addEventListener('click', renameSession);
-  document.getElementById('deleteSessionBtn').addEventListener('click', deleteSession);
-  document.getElementById('exportSessionBtn').addEventListener('click', exportSession);
-  document.getElementById('sendBtn').addEventListener('click', sendMessage);
-  document.getElementById('clearContextBtn').addEventListener('click', clearContext);
-  document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
-  document.getElementById('testLocalBtn').addEventListener('click', () => testProvider('local'));
-  document.getElementById('testCloudBtn').addEventListener('click', () => testProvider('cloud'));
-  document.getElementById('saveSnapshotBtn').addEventListener('click', saveSnapshot);
-  document.getElementById('loadSnapshotsBtn').addEventListener('click', loadSnapshots);
-
-  loadHealth();
-  loadConfig();
-  refreshSessions();
-  loadSnapshots();
+loadHealth(); loadConfig(); refreshSessions(); loadSnapshots(); refreshActions();
 </script>
 </body>
 </html>

@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
-"""OpenClaw Desktop Orchestrator (V1+).
-
-Features:
-- health/status endpoint
-- config read/write + connectivity test
-- local/cloud chat completion + fallback
-- session CRUD + export
-- config snapshots + restore
-- diagnostics export + basic logs
-"""
-
 from __future__ import annotations
 
 import json
 import re
+import shlex
+import subprocess
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -34,19 +25,22 @@ SESSIONS_FILE = DATA_DIR / "sessions.json"
 SNAPSHOT_DIR = DATA_DIR / "snapshots"
 DIAG_DIR = DATA_DIR / "diagnostics"
 LOG_FILE = DATA_DIR / "app.log"
+ACTIONS_FILE = DATA_DIR / "actions.json"
+
+ALLOWED_ACTIONS = {
+    "pwd": ["pwd"],
+    "date": ["date"],
+    "ls_home": ["ls", "-la", str(Path.home())],
+    "whoami": ["whoami"],
+    "uname": ["uname", "-a"],
+}
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "app": {"name": "openclaw-desktop", "version": "0.2.0"},
-    "chat": {
-        "cloud_fallback_to_local": True,
-        "max_history_messages": 40,
-    },
+    "app": {"name": "openclaw-desktop", "version": "0.3.0"},
+    "chat": {"cloud_fallback_to_local": True, "max_history_messages": 40},
+    "computer_control": {"enabled": True, "require_confirm": True},
     "providers": {
-        "local": {
-            "enabled": True,
-            "model": "local-echo",
-            "endpoint": "",
-        },
+        "local": {"enabled": True, "model": "local-echo", "endpoint": ""},
         "cloud": {
             "enabled": False,
             "base_url": "https://api.openai.com/v1/chat/completions",
@@ -64,10 +58,9 @@ def now_iso() -> str:
 
 def log_event(event: str, payload: dict[str, Any] | None = None) -> None:
     payload = payload or {}
-    line = f"{now_iso()} | {event} | {json.dumps(payload, ensure_ascii=False)}\n"
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with LOG_FILE.open("a", encoding="utf-8") as f:
-        f.write(line)
+        f.write(f"{now_iso()} | {event} | {json.dumps(payload, ensure_ascii=False)}\n")
 
 
 def ensure_paths() -> None:
@@ -79,6 +72,8 @@ def ensure_paths() -> None:
         CONFIG_FILE.write_text(json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2), encoding="utf-8")
     if not SESSIONS_FILE.exists():
         SESSIONS_FILE.write_text("[]", encoding="utf-8")
+    if not ACTIONS_FILE.exists():
+        ACTIONS_FILE.write_text("[]", encoding="utf-8")
     if not LOG_FILE.exists():
         LOG_FILE.write_text("", encoding="utf-8")
 
@@ -98,9 +93,7 @@ def save_json(path: Path, payload: Any) -> None:
 
 def load_config() -> dict[str, Any]:
     data = load_json(CONFIG_FILE, DEFAULT_CONFIG)
-    if not isinstance(data, dict):
-        return DEFAULT_CONFIG
-    return data
+    return data if isinstance(data, dict) else DEFAULT_CONFIG
 
 
 def save_config(cfg: dict[str, Any]) -> None:
@@ -109,35 +102,36 @@ def save_config(cfg: dict[str, Any]) -> None:
 
 def load_sessions() -> list[dict[str, Any]]:
     data = load_json(SESSIONS_FILE, [])
-    if not isinstance(data, list):
-        return []
-    return data
+    return data if isinstance(data, list) else []
 
 
 def save_sessions(items: list[dict[str, Any]]) -> None:
     save_json(SESSIONS_FILE, items)
 
 
+def load_actions() -> list[dict[str, Any]]:
+    data = load_json(ACTIONS_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def save_actions(items: list[dict[str, Any]]) -> None:
+    save_json(ACTIONS_FILE, items)
+
+
 def find_or_create_session(session_id: str | None, sessions: list[dict[str, Any]]) -> dict[str, Any]:
     if session_id:
-        for session in sessions:
-            if session.get("id") == session_id:
-                return session
-    session = {
-        "id": str(uuid4()),
-        "title": "新会话",
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-        "messages": [],
-    }
-    sessions.append(session)
-    return session
+        for s in sessions:
+            if s.get("id") == session_id:
+                return s
+    s = {"id": str(uuid4()), "title": "新会话", "created_at": now_iso(), "updated_at": now_iso(), "messages": []}
+    sessions.append(s)
+    return s
 
 
-def get_session_by_id(session_id: str, sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
-    for session in sessions:
-        if session.get("id") == session_id:
-            return session
+def get_by_id(items: list[dict[str, Any]], item_id: str) -> dict[str, Any] | None:
+    for i in items:
+        if i.get("id") == item_id:
+            return i
     return None
 
 
@@ -147,10 +141,10 @@ def sanitize_name(name: str) -> str:
 
 
 def list_snapshots() -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
+    out = []
     for p in sorted(SNAPSHOT_DIR.glob("*.json"), reverse=True):
-        items.append({"name": p.stem, "path": str(p), "updated_at": datetime.fromtimestamp(p.stat().st_mtime).isoformat()})
-    return items
+        out.append({"name": p.stem, "path": str(p), "updated_at": datetime.fromtimestamp(p.stat().st_mtime).isoformat()})
+    return out
 
 
 def local_generate(messages: list[dict[str, str]], model: str) -> str:
@@ -160,19 +154,16 @@ def local_generate(messages: list[dict[str, str]], model: str) -> str:
 
 
 def cloud_generate(messages: list[dict[str, str]], cfg: dict[str, Any], model: str) -> str:
-    providers = cfg.get("providers", {})
-    cloud = providers.get("cloud", {}) if isinstance(providers, dict) else {}
+    cloud = cfg.get("providers", {}).get("cloud", {})
     base_url = str(cloud.get("base_url", "")).strip()
     api_key = str(cloud.get("api_key", "")).strip()
     timeout_s = int(cloud.get("timeout_s", 45))
     if not base_url or not api_key:
         raise ValueError("云端模型未配置 base_url 或 api_key")
-
-    payload = {"model": model, "messages": messages, "temperature": 0.7}
     req = urllib.request.Request(
         base_url,
         method="POST",
-        data=json.dumps(payload).encode("utf-8"),
+        data=json.dumps({"model": model, "messages": messages, "temperature": 0.7}).encode("utf-8"),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
     )
     try:
@@ -190,19 +181,45 @@ def validate_provider(provider: str) -> bool:
 def chat_generate(provider: str, model: str, messages: list[dict[str, Any]], cfg: dict[str, Any]) -> tuple[str, str]:
     if provider == "local":
         return local_generate(messages, model), "local"
-
     try:
         return cloud_generate(messages, cfg, model), "cloud"
     except Exception:
-        fallback = bool(cfg.get("chat", {}).get("cloud_fallback_to_local", True))
-        if not fallback:
+        if not bool(cfg.get("chat", {}).get("cloud_fallback_to_local", True)):
             raise
         local_model = str(cfg.get("providers", {}).get("local", {}).get("model", "local-echo"))
         return local_generate(messages, local_model), "local-fallback"
 
 
+def detect_action_from_text(text: str) -> dict[str, Any] | None:
+    t = text.lower().strip()
+    if any(k in t for k in ["当前目录", "pwd", "目录在哪"]):
+        return {"action_type": "pwd", "command": ALLOWED_ACTIONS["pwd"], "reason": "查询当前目录"}
+    if any(k in t for k in ["日期", "时间", "date"]):
+        return {"action_type": "date", "command": ALLOWED_ACTIONS["date"], "reason": "查询系统时间"}
+    if any(k in t for k in ["列出", "文件", "home", "家目录"]):
+        return {"action_type": "ls_home", "command": ALLOWED_ACTIONS["ls_home"], "reason": "查看主目录内容"}
+    if any(k in t for k in ["我是谁", "whoami", "当前用户"]):
+        return {"action_type": "whoami", "command": ALLOWED_ACTIONS["whoami"], "reason": "查询当前用户"}
+    if any(k in t for k in ["系统信息", "uname", "内核"]):
+        return {"action_type": "uname", "command": ALLOWED_ACTIONS["uname"], "reason": "查询系统信息"}
+    return None
+
+
+def execute_allowed_action(action_type: str) -> dict[str, Any]:
+    if action_type not in ALLOWED_ACTIONS:
+        raise ValueError("action not allowed")
+    cmd = ALLOWED_ACTIONS[action_type]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
+    return {
+        "command": shlex.join(cmd),
+        "returncode": proc.returncode,
+        "stdout": proc.stdout.strip(),
+        "stderr": proc.stderr.strip(),
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "OpenClawOrchestrator/0.3"
+    server_version = "OpenClawOrchestrator/0.4"
 
     def _send_json(self, payload: dict[str, Any], status: int = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -230,209 +247,217 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
-            self._send_json(
-                {
-                    "status": "ok",
-                    "runtime": "running",
-                    "version": "0.3.0",
-                    "timestamp": now_iso(),
-                    "config_path": str(CONFIG_FILE),
-                    "sessions_path": str(SESSIONS_FILE),
-                    "log_path": str(LOG_FILE),
-                }
-            )
+            self._send_json({
+                "status": "ok", "runtime": "running", "version": "0.4.0", "timestamp": now_iso(),
+                "config_path": str(CONFIG_FILE), "sessions_path": str(SESSIONS_FILE), "actions_path": str(ACTIONS_FILE), "log_path": str(LOG_FILE)
+            })
             return
-
         if self.path == "/api/config":
             self._send_json({"config": load_config()})
             return
-
         if self.path == "/api/sessions":
             self._send_json({"sessions": load_sessions()})
             return
-
+        if self.path == "/api/actions":
+            self._send_json({"actions": load_actions()})
+            return
         if self.path.startswith("/api/sessions/") and self.path.endswith("/export"):
-            session_id = self.path.split("/")[3]
-            sessions = load_sessions()
-            session = get_session_by_id(session_id, sessions)
-            if not session:
+            sid = self.path.split("/")[3]
+            s = get_by_id(load_sessions(), sid)
+            if not s:
                 self._send_json({"error": "session not found"}, status=HTTPStatus.NOT_FOUND)
                 return
-            self._send_json({"session": session})
+            self._send_json({"session": s})
             return
-
         if self.path == "/api/snapshots":
             self._send_json({"snapshots": list_snapshots()})
             return
-
         if self.path == "/api/diagnostics/export":
             sessions = load_sessions()
+            actions = load_actions()
             diag = {
                 "generated_at": now_iso(),
-                "health": {"status": "ok", "version": "0.3.0"},
+                "health": {"status": "ok", "version": "0.4.0"},
                 "config": load_config(),
                 "session_count": len(sessions),
+                "action_count": len(actions),
                 "latest_sessions": [{"id": s.get("id"), "title": s.get("title")} for s in sessions[-5:]],
+                "latest_actions": actions[-10:],
             }
-            diag_name = f"diag_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            diag_path = DIAG_DIR / diag_name
-            save_json(diag_path, diag)
-            self._send_json({"ok": True, "diagnostic_path": str(diag_path), "diagnostic": diag})
+            p = DIAG_DIR / f"diag_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            save_json(p, diag)
+            self._send_json({"ok": True, "diagnostic_path": str(p), "diagnostic": diag})
             return
-
         if self.path in {"/", "/index.html", "/status"}:
-            if WEB_PAGE.exists():
-                self._send_html(WEB_PAGE.read_bytes())
-            else:
-                self._send_html(b"<h1>UI page not found</h1>", status=HTTPStatus.NOT_FOUND)
+            self._send_html(WEB_PAGE.read_bytes() if WEB_PAGE.exists() else b"<h1>UI page not found</h1>", status=HTTPStatus.OK if WEB_PAGE.exists() else HTTPStatus.NOT_FOUND)
             return
-
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/api/config":
             body = self._read_json()
-            config = body.get("config")
-            if not isinstance(config, dict):
+            cfg = body.get("config")
+            if not isinstance(cfg, dict):
                 self._send_json({"error": "invalid config"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            save_config(config)
+            save_config(cfg)
             log_event("config_saved")
-            self._send_json({"ok": True, "config": config})
+            self._send_json({"ok": True, "config": cfg})
             return
-
         if self.path == "/api/sessions":
             sessions = load_sessions()
-            session = find_or_create_session(None, sessions)
+            s = find_or_create_session(None, sessions)
             save_sessions(sessions)
-            self._send_json({"ok": True, "session": session})
+            self._send_json({"ok": True, "session": s})
             return
-
         if self.path.startswith("/api/sessions/") and self.path.endswith("/rename"):
-            session_id = self.path.split("/")[3]
-            body = self._read_json()
-            title = str(body.get("title", "")).strip()
+            sid = self.path.split("/")[3]
+            title = str(self._read_json().get("title", "")).strip()
             if not title:
                 self._send_json({"error": "title is required"}, status=HTTPStatus.BAD_REQUEST)
                 return
             sessions = load_sessions()
-            session = get_session_by_id(session_id, sessions)
-            if not session:
+            s = get_by_id(sessions, sid)
+            if not s:
                 self._send_json({"error": "session not found"}, status=HTTPStatus.NOT_FOUND)
                 return
-            session["title"] = title
-            session["updated_at"] = now_iso()
+            s["title"] = title
+            s["updated_at"] = now_iso()
             save_sessions(sessions)
-            self._send_json({"ok": True, "session": session})
+            self._send_json({"ok": True, "session": s})
             return
-
         if self.path == "/api/snapshots":
-            body = self._read_json()
-            name = sanitize_name(str(body.get("name", "")))
+            name = sanitize_name(str(self._read_json().get("name", "")))
             target = SNAPSHOT_DIR / f"{name}.json"
             save_json(target, load_config())
             self._send_json({"ok": True, "snapshot": {"name": name, "path": str(target)}})
             return
-
         if self.path.startswith("/api/snapshots/") and self.path.endswith("/restore"):
             name = self.path.split("/")[3]
             target = SNAPSHOT_DIR / f"{sanitize_name(name)}.json"
             if not target.exists():
                 self._send_json({"error": "snapshot not found"}, status=HTTPStatus.NOT_FOUND)
                 return
-            config = load_json(target, DEFAULT_CONFIG)
-            if not isinstance(config, dict):
+            cfg = load_json(target, DEFAULT_CONFIG)
+            if not isinstance(cfg, dict):
                 self._send_json({"error": "invalid snapshot"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            save_config(config)
-            self._send_json({"ok": True, "config": config})
+            save_config(cfg)
+            self._send_json({"ok": True, "config": cfg})
             return
-
         if self.path == "/v1/config/test":
-            body = self._read_json()
-            provider = str(body.get("provider", "local"))
-            config = load_config()
+            provider = str(self._read_json().get("provider", "local"))
+            cfg = load_config()
             try:
                 if provider == "local":
-                    local = config.get("providers", {}).get("local", {})
-                    model = str(local.get("model", "local-echo"))
-                    _ = local_generate([{"role": "user", "content": "ping"}], model)
+                    local_generate([{"role": "user", "content": "ping"}], str(cfg.get("providers", {}).get("local", {}).get("model", "local-echo")))
                 elif provider == "cloud":
-                    cloud = config.get("providers", {}).get("cloud", {})
-                    model = str(cloud.get("model", "gpt-4o-mini"))
-                    _ = cloud_generate([{"role": "user", "content": "ping"}], config, model)
+                    cloud_generate([{"role": "user", "content": "ping"}], cfg, str(cfg.get("providers", {}).get("cloud", {}).get("model", "gpt-4o-mini")))
                 else:
                     raise ValueError("unsupported provider")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 self._send_json({"ok": False, "error_message": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
             self._send_json({"ok": True})
             return
-
         if self.path == "/v1/chat/completions":
             body = self._read_json()
             provider = str(body.get("provider", "local"))
             model = str(body.get("model", "local-echo"))
-            session_id = body.get("session_id")
+            sid = body.get("session_id")
             messages = body.get("messages", [])
-
             if not validate_provider(provider):
                 self._send_json({"error": "invalid provider"}, status=HTTPStatus.BAD_REQUEST)
                 return
             if not isinstance(messages, list):
                 self._send_json({"error": "messages must be list"}, status=HTTPStatus.BAD_REQUEST)
                 return
-
-            config = load_config()
+            cfg = load_config()
             sessions = load_sessions()
-            session = find_or_create_session(str(session_id) if session_id else None, sessions)
-
+            s = find_or_create_session(str(sid) if sid else None, sessions)
             try:
-                content, actual_provider = chat_generate(provider, model, messages, config)
-            except Exception as exc:  # noqa: BLE001
+                content, actual = chat_generate(provider, model, messages, cfg)
+            except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
-
-            assistant_msg = {"role": "assistant", "content": content}
-            max_history = int(config.get("chat", {}).get("max_history_messages", 40))
-            session_messages = (messages + [assistant_msg])[-max_history:]
-            session["messages"] = session_messages
-            session["updated_at"] = now_iso()
-            if session.get("title") == "新会话":
+            s["messages"] = (messages + [{"role": "assistant", "content": content}])[-int(cfg.get("chat", {}).get("max_history_messages", 40)):]
+            s["updated_at"] = now_iso()
+            if s.get("title") == "新会话":
                 first_user = next((m.get("content") for m in messages if m.get("role") == "user"), "新会话")
-                session["title"] = str(first_user)[:24]
+                s["title"] = str(first_user)[:24]
             save_sessions(sessions)
-            log_event("chat", {"session_id": session.get("id"), "provider": provider, "actual_provider": actual_provider})
-
-            self._send_json(
-                {
-                    "session_id": session["id"],
-                    "provider": provider,
-                    "actual_provider": actual_provider,
-                    "model": model,
-                    "content": content,
-                    "usage": {
-                        "prompt_tokens": sum(len(str(m.get("content", ""))) for m in messages),
-                        "completion_tokens": len(content),
-                    },
-                }
-            )
+            self._send_json({
+                "session_id": s["id"], "provider": provider, "actual_provider": actual, "model": model, "content": content,
+                "usage": {"prompt_tokens": sum(len(str(m.get("content", ""))) for m in messages), "completion_tokens": len(content)}
+            })
             return
-
+        if self.path == "/v1/chat/operate":
+            body = self._read_json()
+            text = str(body.get("text", "")).strip()
+            sid = str(body.get("session_id", "") or "")
+            cfg = load_config()
+            if not bool(cfg.get("computer_control", {}).get("enabled", True)):
+                self._send_json({"error": "computer control disabled"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            plan = detect_action_from_text(text)
+            if not plan:
+                self._send_json({"ok": False, "message": "未识别可执行的电脑操作，请尝试：查询当前目录/系统时间/主目录文件"})
+                return
+            actions = load_actions()
+            action = {
+                "id": str(uuid4()), "created_at": now_iso(), "session_id": sid or None, "status": "pending",
+                "text": text, "action_type": plan["action_type"], "reason": plan["reason"], "command": plan["command"],
+            }
+            actions.append(action)
+            save_actions(actions)
+            log_event("action_planned", {"action_id": action["id"], "action_type": action["action_type"]})
+            require_confirm = bool(cfg.get("computer_control", {}).get("require_confirm", True))
+            if require_confirm:
+                self._send_json({"ok": True, "requires_confirm": True, "action": action})
+                return
+            result = execute_allowed_action(action["action_type"])
+            action["status"] = "done"
+            action["executed_at"] = now_iso()
+            action["result"] = result
+            save_actions(actions)
+            log_event("action_executed", {"action_id": action["id"], "action_type": action["action_type"], "returncode": result.get("returncode")})
+            self._send_json({"ok": True, "requires_confirm": False, "action": action})
+            return
+        if self.path.startswith("/api/actions/") and self.path.endswith("/execute"):
+            action_id = self.path.split("/")[3]
+            actions = load_actions()
+            action = get_by_id(actions, action_id)
+            if not action:
+                self._send_json({"error": "action not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            if action.get("status") == "done":
+                self._send_json({"ok": True, "action": action})
+                return
+            try:
+                result = execute_allowed_action(str(action.get("action_type", "")))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            action["status"] = "done"
+            action["executed_at"] = now_iso()
+            action["result"] = result
+            save_actions(actions)
+            log_event("action_executed", {"action_id": action_id, "action_type": action.get("action_type"), "returncode": result.get("returncode")})
+            self._send_json({"ok": True, "action": action})
+            return
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
 
     def do_DELETE(self) -> None:  # noqa: N802
         if self.path.startswith("/api/sessions/"):
-            session_id = self.path.split("/")[3]
+            sid = self.path.split("/")[3]
             sessions = load_sessions()
-            new_sessions = [s for s in sessions if s.get("id") != session_id]
+            new_sessions = [s for s in sessions if s.get("id") != sid]
             if len(new_sessions) == len(sessions):
                 self._send_json({"error": "session not found"}, status=HTTPStatus.NOT_FOUND)
                 return
             save_sessions(new_sessions)
             self._send_json({"ok": True})
             return
-
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
 
     def log_message(self, fmt: str, *args: Any) -> None:
